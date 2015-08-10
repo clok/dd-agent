@@ -90,6 +90,8 @@ class RabbitMQ(AgentCheck):
 
     def __init__(self, name, init_config, agentConfig, instances=None):
         AgentCheck.__init__(self, name, init_config, agentConfig, instances)
+        self.cluster_name = None
+        self.global_tags = []
         self.already_alerted = []
 
     def _get_config(self, instance):
@@ -122,6 +124,8 @@ class RabbitMQ(AgentCheck):
             },
         }
 
+        env = instance.get('environment', 'dev')
+        
         for object_type, filters in specified.iteritems():
             for filter_type, filter_objects in filters.iteritems():
                 if type(filter_objects) != list:
@@ -130,20 +134,30 @@ class RabbitMQ(AgentCheck):
 
         auth = (username, password)
 
-        return base_url, max_detailed, specified, auth
+        return base_url, max_detailed, specified, env, auth
 
     def check(self, instance):
-        base_url, max_detailed, specified, auth = self._get_config(instance)
+        base_url, max_detailed, specified, env, auth = self._get_config(instance)
 
+        # Set Environment tag
+        self.global_tags = ['env:%s' % env]
+        
+        # Overview
+        self._process_overview(base_url, auth=auth)
+        
         # Generate metrics from the status API.
         self.get_stats(instance, base_url, QUEUE_TYPE, max_detailed[
                        QUEUE_TYPE], specified[QUEUE_TYPE], auth=auth)
         self.get_stats(instance, base_url, NODE_TYPE, max_detailed[
                        NODE_TYPE], specified[NODE_TYPE], auth=auth)
-
+        
         # Generate a service check from the aliveness API.
         vhosts = instance.get('vhosts')
         self._check_aliveness(base_url, vhosts, auth=auth)
+
+        # Reset state variables for next instance
+        self.cluster_name = None
+        self.global_tags = []
 
     def _get_data(self, url, auth=None):
         try:
@@ -241,7 +255,7 @@ class RabbitMQ(AgentCheck):
             self._get_metrics(data_line, object_type)
 
     def _get_metrics(self, data, object_type):
-        tags = []
+        tags = list(self.global_tags)
         tag_list = TAGS_MAP[object_type]
         for t in tag_list:
             tag = data.get(t)
@@ -286,7 +300,7 @@ class RabbitMQ(AgentCheck):
             "alert_type": 'warning',
             "source_type_name": SOURCE_TYPE_NAME,
             "host": self.hostname,
-            "tags": ["base_url:%s" % base_url, "host:%s" % self.hostname],
+            "tags": ["rabbitmq_cluster:%s" % self.cluster_name, "base_url:%s" % base_url, "host:%s" % self.hostname],
             "event_object": "rabbitmq.limit.%s" % object_type,
         }
 
@@ -306,7 +320,9 @@ class RabbitMQ(AgentCheck):
             vhosts = [v['name'] for v in vhosts_response]
 
         for vhost in vhosts:
-            tags = ['vhost:%s' % vhost]
+            tags = list(self.global_tags)
+            tags.append('vhost:%s' % vhost)
+            
             # We need to urlencode the vhost because it can be '/'.
             path = u'aliveness-test/%s' % (urllib.quote_plus(vhost))
             aliveness_url = urlparse.urljoin(base_url, path)
@@ -326,3 +342,31 @@ class RabbitMQ(AgentCheck):
 
             self.service_check(
                 'rabbitmq.aliveness', status, tags, message=message)
+
+    def _process_overview(self, base_url, auth=None):
+        """ Pull General Information like:
+            - cluster_name (if it is a cluster, defaults to 'none')
+            - number of channels
+            - number of connections
+            - number of consumers
+            - number of exchanges
+            - number of queues
+            These values will be placed under the stats 'rabbitmq.cluster.<stat>'
+            as a gauge value.
+            This will also add the rabbitmq_cluster:<cluster_name> tag to the
+            global tag list
+        """
+        # Fetch _all_ oversiew data from the API.
+        overview_url = urlparse.urljoin(base_url, 'overview')
+        overview = self._get_data(overview_url, auth=auth)
+
+        self.cluster_name = overview.get('cluster_name', 'none')
+        self.global_tags.append('rabbitmq_cluster:%s' % (self.cluster_name))
+        
+        tags = list(self.global_tags)
+        values = ['consumers', 'queues', 'exchanges', 'connections', 'channels']
+        for v in values:
+            self.gauge('rabbitmq.cluster.%s' % (v), float(overview['object_totals'].get(v, 0)), tags=tags)
+
+
+        

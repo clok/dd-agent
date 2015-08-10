@@ -3,10 +3,13 @@ init_config:
 instances:
   # for every instance a 'rabbitmq_api_url' must be provided, pointing to the api
   # url of the RabbitMQ Managment Plugin (http://www.rabbitmq.com/management.html)
-  # optional: 'rabbitmq_user' (default: guest) and 'rabbitmq_pass' (default: guest)
+  # optional: 'rabbitmq_user' (default: guest)
+  #           'rabbitmq_pass' (default: guest)
+  #           'environment'   (default: dev)
   - rabbitmq_api_url: http://localhost:15672/api/
     rabbitmq_user: guest
     rabbitmq_pass: guest
+    environment: dev
     # If you have less than 3 nodes, you don't have to set the nodes parameters
     # All nodes metrics will be collected
     # If you have more than 3 nodes: you can set 3 node names. Metrics will be collected
